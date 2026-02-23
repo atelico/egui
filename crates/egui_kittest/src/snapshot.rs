@@ -264,7 +264,8 @@ impl Display for SnapshotError {
                 diff,
                 diff_path,
             } => {
-                let diff_path = std::path::absolute(diff_path).unwrap_or(diff_path.clone());
+                let diff_path =
+                    std::path::absolute(diff_path).unwrap_or_else(|_| diff_path.clone());
                 write!(
                     f,
                     "'{name}' Image did not match snapshot. Diff: {diff}, {}. {HOW_TO_UPDATE_SCREENSHOTS}",
@@ -272,7 +273,7 @@ impl Display for SnapshotError {
                 )
             }
             Self::OpenSnapshot { path, err } => {
-                let path = std::path::absolute(path).unwrap_or(path.clone());
+                let path = std::path::absolute(path).unwrap_or_else(|_| path.clone());
                 match err {
                     ImageError::IoError(io) => match io.kind() {
                         ErrorKind::NotFound => {
@@ -310,7 +311,7 @@ impl Display for SnapshotError {
                 )
             }
             Self::WriteSnapshot { path, err } => {
-                let path = std::path::absolute(path).unwrap_or(path.clone());
+                let path = std::path::absolute(path).unwrap_or_else(|_| path.clone());
                 write!(f, "Error writing snapshot: {err}\nAt: {}", path.display())
             }
             Self::RenderError { err } => {
@@ -720,11 +721,14 @@ impl<State> Harness<'_, State> {
             })
             .unwrap();
 
+        // Close temp file so it isn't locked when `open` tries to launch it (on Windows)
+        let path = temp_file.into_temp_path();
+
         #[expect(clippy::print_stdout)]
         {
             println!("Wrote debug snapshot to: {}", path.display());
         }
-        let result = open::that(path);
+        let result = open::that(&path);
         if let Err(err) = result {
             #[expect(clippy::print_stderr)]
             {
@@ -855,6 +859,7 @@ impl From<SnapshotResults> for Vec<SnapshotError> {
 }
 
 impl Drop for SnapshotResults {
+    #[track_caller]
     fn drop(&mut self) {
         // Don't panic if we are already panicking (the test probably failed for another reason)
         if std::thread::panicking() {
