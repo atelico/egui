@@ -6,11 +6,11 @@ use crate::{AsIdSalt, IdSalt};
 
 /// Types that can be converted to an [`Id`].
 ///
-/// This is all types implementing `Hash` and `Debug`,
+/// This is all types implementing `Hash`,
 /// which includes things like string, integers, tuples of those, etc.
-pub trait AsId: std::hash::Hash + std::fmt::Debug {}
+pub trait AsId: std::hash::Hash {}
 
-impl<T: std::hash::Hash + std::fmt::Debug> AsId for T {}
+impl<T: std::hash::Hash> AsId for T {}
 
 /// egui tracks widgets frame-to-frame using [`Id`]s.
 ///

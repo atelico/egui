@@ -2,11 +2,11 @@ use std::num::NonZeroU64;
 
 /// Types that can be converted to an [`IdSalt`].
 ///
-/// This is all types implementing `Hash` and `Debug`,
+/// This is all types implementing `Hash`,
 /// which includes things like string, integers, tuples of those, etc.
-pub trait AsIdSalt: std::hash::Hash + std::fmt::Debug {}
+pub trait AsIdSalt: std::hash::Hash {}
 
-impl<T: std::hash::Hash + std::fmt::Debug> AsIdSalt for T {}
+impl<T: std::hash::Hash> AsIdSalt for T {}
 
 /// Uniquely identifies a child widget within a parent widget.
 ///
