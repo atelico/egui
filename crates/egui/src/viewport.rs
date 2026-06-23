@@ -73,7 +73,7 @@ use std::sync::Arc;
 
 use epaint::{Pos2, Vec2};
 
-use crate::{Context, Id, Ui};
+use crate::{AsId, Context, Id, Ui};
 
 // ----------------------------------------------------------------------------
 
@@ -150,7 +150,7 @@ impl ViewportId {
     pub const ROOT: Self = Self(Id::NULL);
 
     #[inline]
-    pub fn from_hash_of(source: impl std::hash::Hash) -> Self {
+    pub fn from_hash_of(source: impl AsId) -> Self {
         Self(Id::new(source))
     }
 }
@@ -1201,7 +1201,7 @@ impl ViewportCommand {
 
 /// Describes a viewport, i.e. a native window.
 ///
-/// This is returned by [`crate::Context::run`] on each frame, and should be applied
+/// This is returned by [`crate::Context::run_ui`] on each frame, and should be applied
 /// by the integration.
 #[derive(Clone)]
 pub struct ViewportOutput {

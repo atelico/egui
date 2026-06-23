@@ -1,9 +1,7 @@
-use std::hash::Hash;
-
 use crate::{
-    Context, Id, InnerResponse, NumExt as _, Rect, Response, Sense, Stroke, TextStyle,
-    TextWrapMode, Ui, UiBuilder, UiKind, UiStackInfo, Vec2, WidgetInfo, WidgetText, WidgetType,
-    emath, epaint, pos2, remap, remap_clamp, vec2,
+    AsIdSalt, Context, Id, IdSalt, InnerResponse, NumExt as _, Rect, Response, Sense, Stroke,
+    TextStyle, TextWrapMode, Ui, UiBuilder, UiKind, UiStackInfo, WidgetInfo, WidgetText,
+    WidgetType, emath, epaint, pos2, remap, remap_clamp, vec2,
 };
 use emath::GuiRounding as _;
 use epaint::{Shape, StrokeKind};
@@ -79,30 +77,6 @@ impl CollapsingState {
         } else {
             ctx.animate_bool_responsive(self.id, self.state.open)
         }
-    }
-
-    /// Will toggle when clicked, etc.
-    pub(crate) fn show_default_button_with_size(
-        &mut self,
-        ui: &mut Ui,
-        button_size: Vec2,
-    ) -> Response {
-        let (_id, rect) = ui.allocate_space(button_size);
-        let response = ui.interact(rect, self.id, Sense::click());
-        response.widget_info(|| {
-            WidgetInfo::labeled(
-                WidgetType::Button,
-                ui.is_enabled(),
-                if self.is_open() { "Hide" } else { "Show" },
-            )
-        });
-
-        if response.clicked() {
-            self.toggle(ui);
-        }
-        let openness = self.openness(ui.ctx());
-        paint_default_icon(ui, openness, &response);
-        response
     }
 
     /// Will toggle when clicked, etc.
@@ -213,6 +187,8 @@ impl CollapsingState {
             self.store(ui.ctx()); // we store any earlier toggling as promised in the docstring
             None
         } else if openness < 1.0 {
+            ui.add_space((openness - 1.0) * ui.spacing().item_spacing.y); // animate spacing too
+
             Some(ui.scope_builder(builder, |child_ui| {
                 let max_height = if self.state.open && self.state.open_height.is_none() {
                     // First frame of expansion.
@@ -393,7 +369,7 @@ pub struct CollapsingHeader {
     text: WidgetText,
     default_open: bool,
     open: Option<bool>,
-    id_salt: Id,
+    id_salt: IdSalt,
     enabled: bool,
     selectable: bool,
     selected: bool,
@@ -410,7 +386,7 @@ impl CollapsingHeader {
     /// you need to provide a unique id source with [`Self::id_salt`].
     pub fn new(text: impl Into<WidgetText>) -> Self {
         let text = text.into();
-        let id_salt = Id::new(text.text());
+        let id_salt = IdSalt::new(text.text());
         Self {
             text,
             default_open: false,
@@ -446,17 +422,8 @@ impl CollapsingHeader {
     /// Explicitly set the source of the [`Id`] of this widget, instead of using title label.
     /// This is useful if the title label is dynamic or not unique.
     #[inline]
-    pub fn id_salt(mut self, id_salt: impl Hash) -> Self {
-        self.id_salt = Id::new(id_salt);
-        self
-    }
-
-    /// Explicitly set the source of the [`Id`] of this widget, instead of using title label.
-    /// This is useful if the title label is dynamic or not unique.
-    #[deprecated = "Renamed id_salt"]
-    #[inline]
-    pub fn id_source(mut self, id_salt: impl Hash) -> Self {
-        self.id_salt = Id::new(id_salt);
+    pub fn id_salt(mut self, id_salt: impl AsIdSalt) -> Self {
+        self.id_salt = IdSalt::new(id_salt);
         self
     }
 

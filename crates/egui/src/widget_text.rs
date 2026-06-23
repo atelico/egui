@@ -1,10 +1,9 @@
-use emath::GuiRounding as _;
-use epaint::text::TextFormat;
+use epaint::text::{IntoTag, TextFormat, VariationCoords};
 use std::fmt::Formatter;
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    Align, Color32, FontFamily, FontSelection, Galley, Style, TextStyle, TextWrapMode, Ui, Visuals,
+    Align, Color32, FontFamily, FontSelection, Galley, Style, TextStyle, TextWrapMode, Ui,
     text::{LayoutJob, TextWrapping},
 };
 
@@ -34,6 +33,7 @@ pub struct RichText {
     background_color: Color32,
     expand_bg: f32,
     text_color: Option<Color32>,
+    coords: VariationCoords,
     code: bool,
     strong: bool,
     weak: bool,
@@ -55,6 +55,7 @@ impl Default for RichText {
             background_color: Default::default(),
             expand_bg: 1.0,
             text_color: Default::default(),
+            coords: Default::default(),
             code: Default::default(),
             strong: Default::default(),
             weak: Default::default(),
@@ -154,7 +155,7 @@ impl RichText {
     /// Default: 0.0.
     ///
     /// For even text it is recommended you round this to an even number of _pixels_,
-    /// e.g. using [`crate::Painter::round_to_pixel`].
+    /// e.g. using [`emath::GuiRounding`].
     #[inline]
     pub fn extra_letter_spacing(mut self, extra_letter_spacing: f32) -> Self {
         self.extra_letter_spacing = extra_letter_spacing;
@@ -168,7 +169,7 @@ impl RichText {
     /// If `None` (the default), the line height is determined by the font.
     ///
     /// For even text it is recommended you round this to an even number of _pixels_,
-    /// e.g. using [`crate::Painter::round_to_pixel`].
+    /// e.g. using [`emath::GuiRounding`].
     #[inline]
     pub fn line_height(mut self, line_height: Option<f32>) -> Self {
         self.line_height = line_height;
@@ -193,6 +194,23 @@ impl RichText {
         let crate::FontId { size, family } = font_id;
         self.size = Some(size);
         self.family = Some(family);
+        self
+    }
+
+    /// Add a variation coordinate.
+    #[inline]
+    pub fn variation(mut self, tag: impl IntoTag, coord: f32) -> Self {
+        self.coords.push(tag, coord);
+        self
+    }
+
+    /// Override the variation coordinates completely.
+    #[inline]
+    pub fn variations<T: IntoTag>(
+        mut self,
+        variations: impl IntoIterator<Item = (T, f32)>,
+    ) -> Self {
+        self.coords = VariationCoords::new(variations);
         self
     }
 
@@ -379,7 +397,28 @@ impl RichText {
         fallback_font: FontSelection,
         default_valign: Align,
     ) -> (String, crate::text::TextFormat) {
-        let text_color = self.get_text_color(&style.visuals);
+        let text_color = self.get_text_color(style);
+
+        // Resolve font family overrides for bold/italic before destructuring `self`.
+        //
+        // When `Style::strong_font` or `Style::emphasis_font` is configured, we
+        // swap the font family to a real bold/italic typeface instead of relying on
+        // the default color-change (bold) or vertex-skew (italic) approximations.
+        //
+        // If both are configured and the text is both strong and italic,
+        // `emphasis_font` takes precedence (a single FontId can only reference one
+        // family). Users who need a combined bold-italic face can register a
+        // dedicated BoldItalic font family and apply it via `RichText::family()`.
+        let bold_family = if self.strong {
+            style.strong_font.clone()
+        } else {
+            None
+        };
+        let italic_family = if self.italics {
+            style.emphasis_font.clone()
+        } else {
+            None
+        };
 
         let Self {
             text,
@@ -391,6 +430,7 @@ impl RichText {
             background_color,
             expand_bg,
             text_color: _, // already used by `get_text_color`
+            coords,
             code,
             strong: _, // already used by `get_text_color`
             weak: _,   // already used by `get_text_color`
@@ -415,15 +455,28 @@ impl RichText {
             if let Some(family) = family {
                 font_id.family = family;
             }
+
+            // Apply bold/italic font family overrides.
+            // Italic is applied second so it wins when both are set.
+            if let Some(bold_family) = bold_family {
+                font_id.family = bold_family;
+            }
+            if let Some(italic_family) = italic_family {
+                font_id.family = italic_family;
+            }
+
             font_id
         };
+
+        // When a real italic font is configured, skip the vertex skew —
+        // the typeface itself provides proper italic letterforms.
+        let italics = italics && style.emphasis_font.is_none();
 
         let background_color = if code {
             style.visuals.code_bg_color
         } else {
             background_color
         };
-
         let underline = if underline {
             crate::Stroke::new(1.0, line_color)
         } else {
@@ -449,6 +502,7 @@ impl RichText {
                 line_height,
                 color: text_color,
                 background: background_color,
+                coords,
                 italics,
                 underline,
                 strikethrough,
@@ -458,15 +512,33 @@ impl RichText {
         )
     }
 
-    fn get_text_color(&self, visuals: &Visuals) -> Option<Color32> {
+    /// Resolve the text color, accounting for bold font overrides.
+    ///
+    /// Priority (highest first):
+    /// 1. Explicit color set via [`RichText::color()`]
+    /// 2. Strong color — but only when no [`Style::strong_font`] is configured,
+    ///    because a real bold typeface provides visual distinction on its own
+    /// 3. Weak color
+    /// 4. Global [`crate::Visuals::override_text_color`]
+    fn get_text_color(&self, style: &Style) -> Option<Color32> {
         if let Some(text_color) = self.text_color {
+            // Explicit color always wins.
             Some(text_color)
         } else if self.strong {
-            Some(visuals.strong_text_color())
+            if style.strong_font.is_some() {
+                // A real bold font provides visual weight through thicker strokes,
+                // so we don't need the fallback strong color. Use the default
+                // text color instead.
+                style.visuals.override_text_color
+            } else {
+                // No bold font configured — fall back to the strong color
+                // (brighter than normal text) to convey emphasis.
+                Some(style.visuals.strong_text_color())
+            }
         } else if self.weak {
-            Some(visuals.weak_text_color())
+            Some(style.visuals.weak_text_color())
         } else {
-            visuals.override_text_color
+            style.visuals.override_text_color
         }
     }
 }
@@ -669,22 +741,6 @@ impl WidgetText {
     #[inline]
     pub fn background_color(self, background_color: impl Into<Color32>) -> Self {
         self.map_rich_text(|text| text.background_color(background_color))
-    }
-
-    /// Returns a value rounded to [`emath::GUI_ROUNDING`].
-    pub(crate) fn font_height(&self, fonts: &mut epaint::FontsView<'_>, style: &Style) -> f32 {
-        match self {
-            Self::Text(_) => fonts.row_height(&FontSelection::Default.resolve(style)),
-            Self::RichText(text) => text.font_height(fonts, style),
-            Self::LayoutJob(job) => job.font_height(fonts),
-            Self::Galley(galley) => {
-                if let Some(placed_row) = galley.rows.first() {
-                    placed_row.height().round_ui()
-                } else {
-                    galley.size().y.round_ui()
-                }
-            }
-        }
     }
 
     pub fn into_layout_job(

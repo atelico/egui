@@ -1,7 +1,11 @@
 //! egui theme (spacing, colors, etc).
 
 use emath::Align;
-use epaint::{AlphaFromCoverage, CornerRadius, Shadow, Stroke, TextOptions, text::FontTweak};
+use epaint::{
+    AlphaFromCoverage, CornerRadius, Shadow, Stroke, TextOptions,
+    mutex::Mutex,
+    text::{FontTweak, Tag},
+};
 use std::{collections::BTreeMap, ops::RangeInclusive, sync::Arc};
 
 use crate::{
@@ -293,17 +297,6 @@ pub struct Style {
     #[cfg_attr(feature = "serde", serde(skip))]
     pub number_formatter: NumberFormatter,
 
-    /// If set, labels, buttons, etc. will use this to determine whether to wrap the text at the
-    /// right edge of the [`Ui`] they are in. By default, this is `None`.
-    ///
-    /// **Note**: this API is deprecated, use `wrap_mode` instead.
-    ///
-    /// * `None`: use `wrap_mode` instead
-    /// * `Some(true)`: wrap mode defaults to [`crate::TextWrapMode::Wrap`]
-    /// * `Some(false)`: wrap mode defaults to [`crate::TextWrapMode::Extend`]
-    #[deprecated = "Use wrap_mode instead"]
-    pub wrap: Option<bool>,
-
     /// If set, labels, buttons, etc. will use this to determine whether to wrap or truncate the
     /// text at the right edge of the [`Ui`] they are in, or to extend it. By default, this is
     /// `None`.
@@ -346,6 +339,78 @@ pub struct Style {
 
     /// Use a more compact style for menus.
     pub compact_menu_style: bool,
+
+    /// Optional [`FontFamily`] to use for bold/strong text.
+    ///
+    /// By default ([`None`]), [`RichText::strong()`] applies a color change
+    /// (using [`Visuals::strong_text_color`]) to convey emphasis.
+    /// When this is set to [`Some`], strong text will instead be rendered with the
+    /// specified font family, and the color change is skipped.
+    ///
+    /// To use this, first register a bold font via [`crate::Context::set_fonts`],
+    /// then point this field at it:
+    ///
+    /// ```
+    /// # let ctx = egui::Context::default();
+    /// // 1. Register the bold font data and family
+    /// let mut fonts = egui::FontDefinitions::default();
+    /// let bold_font_data: &[u8] = &[]; // bytes of a .ttf file
+    /// fonts.font_data.insert(
+    ///     "my_bold_font".to_owned(),
+    ///     egui::FontData::from_static(bold_font_data).into(),
+    /// );
+    /// fonts.families.insert(
+    ///     egui::FontFamily::Name("Bold".into()),
+    ///     vec!["my_bold_font".to_owned()],
+    /// );
+    /// ctx.set_fonts(fonts);
+    ///
+    /// // 2. Tell egui to use it for strong text
+    /// ctx.global_style_mut(|style| {
+    ///     style.strong_font = Some(egui::FontFamily::Name("Bold".into()));
+    /// });
+    /// ```
+    ///
+    /// **Note:** When text is both strong and italic, and both `strong_font` and
+    /// [`Self::emphasis_font`] are configured, `emphasis_font` takes precedence
+    /// because a single [`FontId`] can only reference one font family.
+    pub strong_font: Option<FontFamily>,
+
+    /// Optional [`FontFamily`] to use for italic/emphasis text.
+    ///
+    /// By default ([`None`]), [`RichText::italics()`] fakes italics by applying a
+    /// horizontal vertex skew during tessellation.
+    /// When this is set to [`Some`], italic text will instead be rendered with the
+    /// specified font family, and the vertex skew is skipped.
+    ///
+    /// To use this, first register an italic font via [`crate::Context::set_fonts`],
+    /// then point this field at it:
+    ///
+    /// ```
+    /// # let ctx = egui::Context::default();
+    /// // 1. Register the italic font data and family
+    /// let mut fonts = egui::FontDefinitions::default();
+    /// let italic_font_data: &[u8] = &[]; // bytes of a .ttf file
+    /// fonts.font_data.insert(
+    ///     "my_italic_font".to_owned(),
+    ///     egui::FontData::from_static(italic_font_data).into(),
+    /// );
+    /// fonts.families.insert(
+    ///     egui::FontFamily::Name("Italic".into()),
+    ///     vec!["my_italic_font".to_owned()],
+    /// );
+    /// ctx.set_fonts(fonts);
+    ///
+    /// // 2. Tell egui to use it for italic text
+    /// ctx.global_style_mut(|style| {
+    ///     style.emphasis_font = Some(egui::FontFamily::Name("Italic".into()));
+    /// });
+    /// ```
+    ///
+    /// **Note:** When text is both strong and italic, and both [`Self::strong_font`] and
+    /// `emphasis_font` are configured, `emphasis_font` takes precedence
+    /// because a single [`FontId`] can only reference one font family.
+    pub emphasis_font: Option<FontFamily>,
 }
 
 #[test]
@@ -582,6 +647,8 @@ pub struct ScrollStyle {
     /// This is only for floating scroll bars.
     /// Solid scroll bars are always opaque.
     pub interact_handle_opacity: f32,
+
+    pub fade: ScrollFadeStyle,
 }
 
 impl Default for ScrollStyle {
@@ -612,6 +679,8 @@ impl ScrollStyle {
             dormant_handle_opacity: 0.0,
             active_handle_opacity: 0.6,
             interact_handle_opacity: 1.0,
+
+            fade: Default::default(),
         }
     }
 
@@ -695,6 +764,8 @@ impl ScrollStyle {
             dormant_handle_opacity,
             active_handle_opacity,
             interact_handle_opacity,
+
+            fade,
         } = self;
 
         ui.horizontal(|ui| {
@@ -766,6 +837,52 @@ impl ScrollStyle {
             ui.horizontal(|ui| {
                 ui.add(DragValue::new(bar_inner_margin).range(0.0..=32.0));
                 ui.label("Inner margin");
+            });
+        }
+
+        ui.separator();
+        fade.ui(ui);
+    }
+}
+
+/// Controls if and how to fade out the sides of a [`crate::ScrollArea`]
+/// to indicate there is more there if you scroll.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct ScrollFadeStyle {
+    /// Opacity of the fade effect at the outer edge, in 0.0-1.0.
+    ///
+    /// Set to 0.0 to disable the fade effect.
+    pub strength: f32,
+
+    /// Size of the fade-area (height for vertical scrolling,
+    /// width for horizontal scrolling).
+    pub size: f32,
+}
+
+impl Default for ScrollFadeStyle {
+    fn default() -> Self {
+        Self {
+            strength: 0.5,
+            size: 20.0,
+        }
+    }
+}
+
+impl ScrollFadeStyle {
+    pub fn ui(&mut self, ui: &mut Ui) {
+        let Self { strength, size } = self;
+
+        ui.horizontal(|ui| {
+            ui.add(DragValue::new(strength).speed(0.01).range(0.0..=1.0));
+            ui.label("Fade strength");
+        });
+
+        if 0.0 < *strength {
+            ui.horizontal(|ui| {
+                ui.add(DragValue::new(size).range(0.0..=64.0));
+                ui.label("Fade size");
             });
         }
     }
@@ -1029,7 +1146,10 @@ pub struct Visuals {
     /// How the text cursor acts.
     pub text_cursor: TextCursorStyle,
 
-    /// Allow child widgets to be just on the border and still have a stroke with some thickness
+    /// Allow widgets to paint this much outside the scroll area rect.
+    ///
+    /// Legacy. Should not be used anymore.
+    /// Use [`crate::ScrollArea::content_margin`] instead.
     pub clip_rect_margin: f32,
 
     /// Show a background behind buttons.
@@ -1108,13 +1228,6 @@ impl Visuals {
     #[inline(always)]
     pub fn window_stroke(&self) -> Stroke {
         self.window_stroke
-    }
-
-    /// When fading out things, we fade the colors towards this.
-    #[inline(always)]
-    #[deprecated = "Use disabled_alpha(). Fading is now handled by modifying the alpha channel."]
-    pub fn fade_out_to_color(&self) -> Color32 {
-        self.widgets.noninteractive.weak_bg_fill
     }
 
     /// Disabled widgets have their alpha modified by this.
@@ -1247,11 +1360,6 @@ impl WidgetVisuals {
     pub fn text_color(&self) -> Color32 {
         self.fg_stroke.color
     }
-
-    #[deprecated = "Renamed to corner_radius"]
-    pub fn rounding(&self) -> CornerRadius {
-        self.corner_radius
-    }
 }
 
 /// Options for help debug egui by adding extra visualization
@@ -1299,6 +1407,10 @@ pub struct DebugOptions {
     /// Show interesting widgets under the mouse cursor.
     pub show_widget_hits: bool,
 
+    /// Show a warning if the same `Rect` had different `Id` and the same parent `Id` on the
+    /// previous frame.
+    pub warn_if_rect_changes_id: bool,
+
     /// If true, highlight widgets that are not aligned to [`emath::GUI_ROUNDING`].
     ///
     /// See [`emath::GuiRounding`] for more.
@@ -1325,6 +1437,7 @@ impl Default for DebugOptions {
             show_resize: false,
             show_interactive_widgets: false,
             show_widget_hits: false,
+            warn_if_rect_changes_id: cfg!(debug_assertions),
             show_unaligned: cfg!(debug_assertions),
             show_focused_widget: false,
         }
@@ -1349,7 +1462,6 @@ pub fn default_text_styles() -> BTreeMap<TextStyle, FontId> {
 
 impl Default for Style {
     fn default() -> Self {
-        #[expect(deprecated)]
         Self {
             override_font_id: None,
             override_text_style: None,
@@ -1357,12 +1469,11 @@ impl Default for Style {
             text_styles: default_text_styles(),
             drag_value_text_style: TextStyle::Button,
             number_formatter: NumberFormatter(Arc::new(emath::format_with_decimals_in_range)),
-            wrap: None,
             wrap_mode: None,
             spacing: Spacing::default(),
             interaction: Interaction::default(),
             visuals: Visuals::default(),
-            animation_time: 6.0 / 60.0, // If we make this too slow, it will be too obvious that our panel animations look like shit :(
+            animation_time: 0.2,
             #[cfg(debug_assertions)]
             debug: Default::default(),
             explanation_tooltips: false,
@@ -1370,6 +1481,8 @@ impl Default for Style {
             always_scroll_the_only_direction: false,
             scroll_animation: ScrollAnimation::default(),
             compact_menu_style: true,
+            strong_font: None,
+            emphasis_font: None,
         }
     }
 }
@@ -1464,7 +1577,7 @@ impl Visuals {
 
             text_cursor: Default::default(),
 
-            clip_rect_margin: 3.0, // should be at least half the size of the widest frame stroke + max WidgetVisuals::expansion
+            clip_rect_margin: 0.0,
             button_frame: true,
             collapsing_header_frame: false,
             indent_has_left_vline: true,
@@ -1663,7 +1776,6 @@ use crate::{
 
 impl Style {
     pub fn ui(&mut self, ui: &mut crate::Ui) {
-        #[expect(deprecated)]
         let Self {
             override_font_id,
             override_text_style,
@@ -1671,7 +1783,6 @@ impl Style {
             text_styles,
             drag_value_text_style,
             number_formatter: _, // can't change callbacks in the UI
-            wrap: _,
             wrap_mode,
             spacing,
             interaction,
@@ -1684,6 +1795,8 @@ impl Style {
             always_scroll_the_only_direction,
             scroll_animation,
             compact_menu_style,
+            strong_font: _,
+            emphasis_font: _,
         } = self;
 
         crate::Grid::new("_options").show(ui, |ui| {
@@ -2283,11 +2396,13 @@ impl Visuals {
                 max_texture_side: _,
                 alpha_from_coverage,
                 font_hinting,
+                subpixel_binning,
             } = text_options;
 
             text_alpha_from_coverage_ui(ui, alpha_from_coverage);
 
-            ui.checkbox(font_hinting, "Enable font hinting");
+            ui.checkbox(font_hinting, "Font hinting (sharper text)");
+            ui.checkbox(subpixel_binning, "Sub-pixel binning (more even kerning)");
         });
 
         ui.collapsing("Text cursor", |ui| {
@@ -2487,6 +2602,7 @@ impl DebugOptions {
             show_resize,
             show_interactive_widgets,
             show_widget_hits,
+            warn_if_rect_changes_id,
             show_unaligned,
             show_focused_widget,
         } = self;
@@ -2517,6 +2633,11 @@ impl DebugOptions {
         );
 
         ui.checkbox(show_widget_hits, "Show widgets under mouse pointer");
+
+        ui.checkbox(
+            warn_if_rect_changes_id,
+            "Warn if a Rect changes Id between frames",
+        );
 
         ui.checkbox(
             show_unaligned,
@@ -2837,7 +2958,7 @@ impl Widget for &mut crate::Frame {
 
 impl Widget for &mut FontTweak {
     fn ui(self, ui: &mut Ui) -> Response {
-        let original: FontTweak = *self;
+        let original: FontTweak = self.clone();
 
         let mut response = Grid::new("font_tweak")
             .num_columns(2)
@@ -2846,7 +2967,11 @@ impl Widget for &mut FontTweak {
                     scale,
                     y_offset_factor,
                     y_offset,
-                    hinting_override,
+                    hinting,
+                    coords,
+                    thin_space_width,
+                    tab_size,
+                    subpixel_binning,
                 } = self;
 
                 ui.label("Scale");
@@ -2862,18 +2987,79 @@ impl Widget for &mut FontTweak {
                 ui.add(DragValue::new(y_offset).speed(-0.02));
                 ui.end_row();
 
-                ui.label("hinting_override");
-                ComboBox::from_id_salt("hinting_override")
-                    .selected_text(match hinting_override {
-                        None => "None",
-                        Some(true) => "Enable",
-                        Some(false) => "Disable",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(hinting_override, None, "None");
-                        ui.selectable_value(hinting_override, Some(true), "Enable");
-                        ui.selectable_value(hinting_override, Some(false), "Disable");
+                ui.label("hinting");
+                ui.horizontal(|ui| {
+                    ui.radio_value(hinting, Some(true), "on");
+                    ui.radio_value(hinting, Some(false), "off");
+                    ui.radio_value(hinting, None, "default");
+                });
+                ui.end_row();
+
+                ui.label("subpixel_binning");
+                ui.horizontal(|ui| {
+                    ui.radio_value(subpixel_binning, Some(true), "on");
+                    ui.radio_value(subpixel_binning, Some(false), "off");
+                    ui.radio_value(subpixel_binning, None, "default");
+                });
+                ui.end_row();
+
+                ui.label("coords");
+                ui.end_row();
+                let mut to_remove = None;
+                for (i, (tag, value)) in coords.as_mut().iter_mut().enumerate() {
+                    let tag_text = ui.ctx().data_mut(|data| {
+                        let tag = *tag;
+                        Arc::clone(data.get_temp_mut_or_insert_with(ui.id().with(i), move || {
+                            Arc::new(Mutex::new(tag.to_string()))
+                        }))
                     });
+
+                    let tag_text = &mut *tag_text.lock();
+                    let response = ui.text_edit_singleline(tag_text);
+                    if response.changed()
+                        && let Ok(new_tag) = Tag::new_checked(tag_text.as_bytes())
+                    {
+                        *tag = new_tag;
+                    }
+                    // Reset stale text when not actively editing
+                    // (e.g. after an item was removed and indices shifted)
+                    if !response.has_focus()
+                        && Tag::new_checked(tag_text.as_bytes()).ok() != Some(*tag)
+                    {
+                        *tag_text = tag.to_string();
+                    }
+
+                    ui.add(DragValue::new(value));
+                    if ui.small_button("🗑").clicked() {
+                        to_remove = Some(i);
+                    }
+                    ui.end_row();
+                }
+                if let Some(i) = to_remove {
+                    coords.remove(i);
+                }
+                if ui.button("Add coord").clicked() {
+                    coords.push(b"wght", 0.0);
+                }
+                if ui.button("Clear coords").clicked() {
+                    coords.clear();
+                }
+                ui.end_row();
+
+                ui.label("thin_space_width");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        DragValue::new(thin_space_width)
+                            .range(0.0..=1.0)
+                            .speed(0.01),
+                    );
+                    ui.label("1\u{2009}234\u{2009}567\u{2009}890");
+                });
+                ui.end_row();
+
+                ui.label("tab_size");
+                ui.add(DragValue::new(tab_size).range(0.0..=16.0).speed(0.1));
+                ui.end_row();
 
                 if ui.button("Reset").clicked() {
                     *self = Default::default();
