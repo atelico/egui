@@ -3,7 +3,7 @@ use core::fmt::Formatter;
 use epaint::text::{IntoTag, TextFormat, VariationCoords};
 
 use crate::{
-    Align, Color32, FontFamily, FontSelection, Galley, Style, TextStyle, TextWrapMode, Ui, Visuals,
+    Align, Color32, FontFamily, FontSelection, Galley, Style, TextStyle, TextWrapMode, Ui,
     text::{LayoutJob, TextWrapping},
 };
 
@@ -417,7 +417,13 @@ impl RichText {
         fallback_font: FontSelection,
         default_valign: Align,
     ) -> (String, crate::text::TextFormat) {
-        let text_color = self.get_text_color(&style.visuals);
+        let text_color = self.get_text_color(style);
+        let italic_family = self
+            .italics
+            .then_some(style.emphasis_font.as_ref())
+            .flatten();
+        let strong_family = self.strong.then_some(style.strong_font.as_ref()).flatten();
+        let styled_family = italic_family.or(strong_family).cloned();
 
         let Self {
             text,
@@ -451,7 +457,7 @@ impl RichText {
             if let Some(size) = size {
                 font_id.size = size;
             }
-            if let Some(family) = family {
+            if let Some(family) = styled_family.or(family) {
                 font_id.family = family;
             }
             font_id
@@ -489,7 +495,7 @@ impl RichText {
                 color: text_color,
                 background: background_color,
                 coords,
-                italics,
+                italics: italics && italic_family.is_none(),
                 underline,
                 strikethrough,
                 valign,
@@ -498,11 +504,16 @@ impl RichText {
         )
     }
 
-    fn get_text_color(&self, visuals: &Visuals) -> Option<Color32> {
+    fn get_text_color(&self, style: &Style) -> Option<Color32> {
+        let visuals = &style.visuals;
         if let Some(text_color) = self.text_color {
             Some(text_color)
         } else if self.strong {
-            Some(visuals.strong_text_color())
+            if style.strong_font.is_some() {
+                visuals.override_text_color
+            } else {
+                Some(visuals.strong_text_color())
+            }
         } else if self.weak {
             Some(visuals.weak_text_color())
         } else {
@@ -950,13 +961,17 @@ impl From<Arc<Galley>> for WidgetText {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Color32, RichText, Visuals, WidgetText};
+    use crate::{Align, Color32, FontFamily, FontSelection, RichText, Style, Visuals, WidgetText};
 
     #[test]
     fn rich_text_color_override_is_explicit() {
         let visuals = Visuals {
             override_text_color: Some(Color32::GREEN),
             ..Visuals::default()
+        };
+        let style = Style {
+            visuals: visuals.clone(),
+            ..Style::default()
         };
         for (text, resolved_color) in [
             (RichText::new("plain"), visuals.override_text_color),
@@ -970,14 +985,36 @@ mod tests {
             ),
         ] {
             assert_eq!(text.color_override(), None);
-            assert_eq!(text.get_text_color(&visuals), resolved_color);
+            assert_eq!(text.get_text_color(&style), resolved_color);
 
             for color in [Color32::RED, Color32::TRANSPARENT, Color32::PLACEHOLDER] {
                 let colored = text.clone().color(color).strong().weak();
                 assert_eq!(colored.color_override(), Some(color));
-                assert_eq!(colored.get_text_color(&visuals), Some(color));
+                assert_eq!(colored.get_text_color(&style), Some(color));
             }
         }
+    }
+
+    #[test]
+    fn rich_text_uses_configured_emphasis_families() {
+        let strong = FontFamily::Name("test-bold".into());
+        let emphasis = FontFamily::Name("test-italic".into());
+        let style = Style {
+            strong_font: Some(strong.clone()),
+            emphasis_font: Some(emphasis.clone()),
+            ..Style::default()
+        };
+        let format = |text: RichText| {
+            text.into_text_and_format(&style, FontSelection::Default, Align::Center)
+                .1
+        };
+        assert_eq!(
+            format(RichText::new("strong").strong()).font_id.family,
+            strong
+        );
+        let both = format(RichText::new("both").strong().italics());
+        assert_eq!(both.font_id.family, emphasis);
+        assert!(!both.italics);
     }
 
     #[test]

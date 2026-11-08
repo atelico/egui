@@ -254,6 +254,12 @@ pub struct Style {
     /// which will take precedence over this.
     pub override_font_id: Option<FontId>,
 
+    /// Typeface used for strong rich text, when configured.
+    pub strong_font: Option<FontFamily>,
+
+    /// Typeface used for italic rich text, when configured.
+    pub emphasis_font: Option<FontFamily>,
+
     /// How to vertically align text.
     ///
     /// Set to `None` to use align that depends on the current layout.
@@ -1538,6 +1544,8 @@ impl Default for Style {
     fn default() -> Self {
         Self {
             override_font_id: None,
+            strong_font: None,
+            emphasis_font: None,
             override_text_style: None,
             override_text_valign: Some(Align::Center),
             text_styles: default_text_styles(),
@@ -1896,6 +1904,8 @@ impl Style {
     pub fn ui(&mut self, ui: &mut crate::Ui) {
         let Self {
             override_font_id,
+            strong_font: _,
+            emphasis_font: _,
             override_text_style,
             override_text_valign,
             text_styles,
