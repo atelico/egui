@@ -3,7 +3,7 @@ use epaint::text::{IntoTag, TextFormat, VariationCoords};
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    Align, Color32, FontFamily, FontSelection, Galley, Style, TextStyle, TextWrapMode, Ui, Visuals,
+    Align, Color32, FontFamily, FontSelection, Galley, Style, TextStyle, TextWrapMode, Ui,
     text::{LayoutJob, TextWrapping},
 };
 
@@ -397,7 +397,13 @@ impl RichText {
         fallback_font: FontSelection,
         default_valign: Align,
     ) -> (String, crate::text::TextFormat) {
-        let text_color = self.get_text_color(&style.visuals);
+        let text_color = self.get_text_color(style);
+        let italic_family = self
+            .italics
+            .then_some(style.emphasis_font.as_ref())
+            .flatten();
+        let strong_family = self.strong.then_some(style.strong_font.as_ref()).flatten();
+        let styled_family = italic_family.or(strong_family).cloned();
 
         let Self {
             text,
@@ -431,7 +437,7 @@ impl RichText {
             if let Some(size) = size {
                 font_id.size = size;
             }
-            if let Some(family) = family {
+            if let Some(family) = styled_family.or(family) {
                 font_id.family = family;
             }
             font_id
@@ -469,7 +475,7 @@ impl RichText {
                 color: text_color,
                 background: background_color,
                 coords,
-                italics,
+                italics: italics && italic_family.is_none(),
                 underline,
                 strikethrough,
                 valign,
@@ -478,11 +484,16 @@ impl RichText {
         )
     }
 
-    fn get_text_color(&self, visuals: &Visuals) -> Option<Color32> {
+    fn get_text_color(&self, style: &Style) -> Option<Color32> {
+        let visuals = &style.visuals;
         if let Some(text_color) = self.text_color {
             Some(text_color)
         } else if self.strong {
-            Some(visuals.strong_text_color())
+            if style.strong_font.is_some() {
+                visuals.override_text_color
+            } else {
+                Some(visuals.strong_text_color())
+            }
         } else if self.weak {
             Some(visuals.weak_text_color())
         } else {
@@ -886,10 +897,43 @@ impl From<Arc<Galley>> for WidgetText {
 
 #[cfg(test)]
 mod tests {
-    use crate::WidgetText;
+    use super::*;
 
     #[test]
     fn ensure_small_widget_text() {
         assert_eq!(size_of::<WidgetText>(), size_of::<String>());
+    }
+
+    #[test]
+    fn rich_text_uses_configured_font_families() {
+        let bold = FontFamily::Name("bold".into());
+        let italic = FontFamily::Name("italic".into());
+        let style = Style {
+            strong_font: Some(bold.clone()),
+            emphasis_font: Some(italic.clone()),
+            ..Default::default()
+        };
+
+        let (_, strong) = RichText::new("bold").strong().into_text_and_format(
+            &style,
+            FontSelection::Default,
+            Align::Center,
+        );
+        assert_eq!(strong.font_id.family, bold);
+
+        let (_, emphasis) = RichText::new("italic").italics().into_text_and_format(
+            &style,
+            FontSelection::Default,
+            Align::Center,
+        );
+        assert_eq!(emphasis.font_id.family, italic);
+        assert!(!emphasis.italics);
+
+        let (_, fallback) = RichText::new("italic").italics().into_text_and_format(
+            &Style::default(),
+            FontSelection::Default,
+            Align::Center,
+        );
+        assert!(fallback.italics);
     }
 }
